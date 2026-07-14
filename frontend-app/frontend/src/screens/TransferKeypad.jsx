@@ -2,15 +2,14 @@ import React, { useState } from 'react';
 import { Delete, Sparkles, MessageCircle, AlertTriangle, ShieldCheck } from 'lucide-react';
 
 const TransferKeypad = ({
-  recipientName = "Gopichand Javanajad",
+  recipientName = "",
   prefilledAmount = "",
   onTransferSuccess,
   onInvestSuccess,
   onOpenScanner,
   onCheckBalance,
   userInitial = "U",
-  recipientVpa = "",
-  payeeRisk = null
+  recipientVpa = ""
 }) => {
   const [amount, setAmount] = useState(prefilledAmount ? prefilledAmount.toString() : "");
 
@@ -40,6 +39,7 @@ const TransferKeypad = ({
 
   // Helper to determine if recipient is a flagged scam address
   const isFlaggedScam = () => {
+    if (!recipientName) return false;
     const name = recipientName.toLowerCase();
     return name.includes("prize") || 
            name.includes("scam") || 
@@ -72,89 +72,53 @@ const TransferKeypad = ({
         </div>
       </div>
 
-      {/* Recipient Details & Real-Time Scam Warning */}
-      <div style={styles.recipientHeaderCard}>
-        <div style={styles.recipientLeft}>
-          <div style={{
-            ...styles.recipientAvatar,
-            background: isFlaggedScam() ? 'rgba(235, 59, 136, 0.12)' : 'linear-gradient(135deg, #aa33ff 0%, #0088ff 100%)',
-            borderColor: isFlaggedScam() ? 'var(--accent-pink)' : 'rgba(255,255,255,0.06)'
-          }}>
-            {getInitials(recipientName)}
+      {/* Recipient Details & Real-Time Scam Warning (rendered only if a recipient is passed) */}
+      {recipientName && (
+        <>
+          <div style={styles.recipientHeaderCard}>
+            <div style={styles.recipientLeft}>
+              <div style={{
+                ...styles.recipientAvatar,
+                background: isFlaggedScam() ? 'rgba(235, 59, 136, 0.12)' : 'linear-gradient(135deg, #aa33ff 0%, #0088ff 100%)',
+                borderColor: isFlaggedScam() ? 'var(--accent-pink)' : 'rgba(255,255,255,0.06)'
+              }}>
+                {getInitials(recipientName)}
+              </div>
+              <div style={styles.recipientInfo}>
+                <span style={styles.recipientText}>Paying {recipientName}</span>
+                <span style={styles.recipientUpiText}>
+                  {recipientVpa || (recipientName.includes("@") ? recipientName
+                    : `${recipientName.toLowerCase().replace(/\s+/g, '')}@upi`)}
+                </span>
+              </div>
+            </div>
+            <div style={styles.verifiedTag}>
+              {isFlaggedScam() ? (
+                <span style={styles.muleTag}>FLAGGED MULE</span>
+              ) : (
+                <span style={styles.safeTag}>VERIFIED SAFE</span>
+              )}
+            </div>
           </div>
-          <div style={styles.recipientInfo}>
-            <span style={styles.recipientText}>Paying {recipientName}</span>
-            <span style={styles.recipientUpiText}>
-              {recipientVpa || (recipientName.includes("@") ? recipientName
-                : `${recipientName.toLowerCase().replace(/\s+/g, '')}@upi`)}
-            </span>
-          </div>
-        </div>
-        <div style={styles.verifiedTag}>
-          {isFlaggedScam() ? (
-            <span style={styles.muleTag}>FLAGGED MULE</span>
-          ) : (
-            /* honest: we HAVEN'T checked yet — the engine scores on Pay.
-               So show "shield active", NOT a premature "verified safe". */
-            <span style={styles.safeTag}>🛡 CHECKS ON PAY</span>
+
+          {isFlaggedScam() && (
+            <div style={styles.scamWarningCard}>
+              <AlertTriangle size={18} color="var(--accent-pink)" style={{ marginTop: 2 }} />
+              <div style={styles.scamWarningText}>
+                <span style={styles.scamWarningTitle}>Scam Alert Database Match</span>
+                <span style={styles.scamWarningDesc}>
+                  Warning: This recipient UPI has been reported 40+ times for cyber fraud lottery claims. Transfers may result in immediate loss of funds.
+                </span>
+              </div>
+            </div>
           )}
-        </div>
-      </div>
-
-      {isFlaggedScam() && (
-        <div style={styles.scamWarningCard}>
-          <AlertTriangle size={18} color="var(--accent-pink)" style={{ marginTop: 2 }} />
-          <div style={styles.scamWarningText}>
-            <span style={styles.scamWarningTitle}>Scam Alert Database Match</span>
-            <span style={styles.scamWarningDesc}>
-              Warning: This recipient UPI has been reported 40+ times for cyber fraud lottery claims. Transfers may result in immediate loss of funds.
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* REAL pre-payment beneficiary risk (from /precheck) — warns BEFORE you pay */}
-      {payeeRisk && payeeRisk.warn && !isFlaggedScam() && (
-        <div style={{
-          ...styles.scamWarningCard,
-          borderColor: payeeRisk.risk_level === 'high' ? 'rgba(235,59,136,0.4)' : 'rgba(255,140,0,0.4)',
-          backgroundColor: payeeRisk.risk_level === 'high' ? 'rgba(235,59,136,0.06)' : 'rgba(255,140,0,0.06)',
-        }}>
-          <AlertTriangle size={18} color={payeeRisk.risk_level === 'high' ? 'var(--accent-pink)' : '#ff8c00'} style={{ marginTop: 2 }} />
-          <div style={styles.scamWarningText}>
-            <span style={{ ...styles.scamWarningTitle, color: payeeRisk.risk_level === 'high' ? 'var(--accent-pink)' : '#ff8c00' }}>
-              {payeeRisk.risk_level === 'high' ? 'High-risk payee — think twice' : 'Heads up before you pay'}
-            </span>
-            {(payeeRisk.reasons || []).slice(0, 2).map((r, i) => (
-              <span key={i} style={styles.scamWarningDesc}>• {r}</span>
-            ))}
-          </div>
-        </div>
+        </>
       )}
 
       {/* Main Display Area (Double click to open QR Scanner) */}
       <div style={styles.displayArea} onDoubleClick={onOpenScanner} title="Double click to scan QR">
         <div style={styles.amountRow}>
           <span style={styles.amountText}>₹{amount || "0"}</span>
-        </div>
-        
-        {/* Pills row (Earn ₹500 & UPI Badge) */}
-        <div style={styles.pillsRow}>
-          <div style={styles.earnBadge}>
-            <Sparkles size={12} style={{ marginRight: 4 }} color="var(--accent-neon)" />
-            <span>Earn ₹500</span>
-          </div>
-          
-          <div style={styles.upiBadge}>
-            {/* Styled inline UPI logo */}
-            <svg width="32" height="12" viewBox="0 0 40 15" fill="none">
-              <path d="M2 2 H6 L8 9 L10 2 H14" stroke="#ffffff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M17 2 H21 V5 H17 Z M17 5 H21 V12 H17 Z" fill="#ffffff" />
-              <path d="M25 2 H29 C31 2 32 3 32 5 C32 7 31 8 29 8 H25 V12 H25 Z" fill="#ffffff" />
-              <path d="M36 2 H40" stroke="#ff8c00" strokeWidth="1.8" strokeLinecap="round" />
-              <path d="M38 2 V12" stroke="#22e67b" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
-          </div>
         </div>
       </div>
 
@@ -190,28 +154,17 @@ const TransferKeypad = ({
         {/* Action Buttons matching the reference image styling */}
         <div style={styles.actionButtonsRow}>
           <button 
-            onClick={handleInvest}
-            disabled={!amount || parseFloat(amount) <= 0}
-            style={{
-              ...styles.investBtn,
-              backgroundColor: amount && parseFloat(amount) > 0 ? 'rgba(235, 59, 136, 0.15)' : 'rgba(255, 255, 255, 0.05)',
-              color: amount && parseFloat(amount) > 0 ? 'var(--accent-pink)' : 'var(--text-secondary)',
-              cursor: amount && parseFloat(amount) > 0 ? 'pointer' : 'default'
-            }}
-          >
-            Invest
-          </button>
-          <button 
             onClick={handleTransfer}
             disabled={!amount || parseFloat(amount) <= 0}
             style={{
               ...styles.transferBtn,
-              backgroundColor: amount && parseFloat(amount) > 0 ? (isFlaggedScam() ? 'var(--accent-pink)' : 'var(--accent-neon)') : 'rgba(255, 255, 255, 0.05)',
+              backgroundColor: amount && parseFloat(amount) > 0 ? (recipientName && isFlaggedScam() ? 'var(--accent-pink)' : 'var(--accent-neon)') : 'rgba(255, 255, 255, 0.05)',
               color: amount && parseFloat(amount) > 0 ? '#000000' : 'var(--text-secondary)',
-              cursor: amount && parseFloat(amount) > 0 ? 'pointer' : 'default'
+              cursor: amount && parseFloat(amount) > 0 ? 'pointer' : 'default',
+              flex: 1
             }}
           >
-            {isFlaggedScam() ? 'Pay Risk Alert' : 'Transfer'}
+            {recipientName && isFlaggedScam() ? 'Pay Risk Alert' : 'Transfer'}
           </button>
         </div>
       </div>

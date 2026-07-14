@@ -15,7 +15,10 @@ import UpiSettings from './screens/UpiSettings';
 import TransferKeypad from './screens/TransferKeypad';
 import RechargeBills from './screens/RechargeBills';
 import FraudReportForm from './screens/FraudReportForm';
-import Login from './screens/Login';
+import OnboardingFlow from './screens/OnboardingFlow';
+import PayeeSelector from './screens/PayeeSelector';
+import ReferPage from './screens/ReferPage';
+import AutopayPage from './screens/AutopayPage';
 import { api, getDeviceId, saveSession, getSession, clearSession } from './api';
 
 import { Shield, Lock, ShieldCheck, AlertTriangle, Fingerprint, Phone, X, Check, Bell, Clock, MapPin, Smartphone, ShieldAlert } from 'lucide-react';
@@ -49,41 +52,32 @@ function App() {
   const [selectedPayee, setSelectedPayee] = useState(null);  // {name, vpa} — exact target when a real contact is tapped
   const [pinModal, setPinModal] = useState(null);       // {amount, isInvest} pending payment
   const [pinInput, setPinInput] = useState("");         // entered UPI PIN
-  const [otpModal, setOtpModal] = useState(null);       // {txId, reason, otpDemo, baseTx} REVIEW step-up
-  const [otpInput, setOtpInput] = useState("");         // entered OTP
 
   // --- REAL login: null until the user logs in (device binds on login) ---
   const [currentUser, setCurrentUser] = useState(null);
   const [currentUserName, setCurrentUserName] = useState('');
-  const [payeeRisk, setPayeeRisk] = useState(null);     // pre-payment beneficiary risk {risk_level, warn, reasons}
   const [realTxns, setRealTxns] = useState([]);
 
   const [booting, setBooting] = useState(true);         // checking saved session on open
 
-  // set app state after any successful login/restore
-  const applyLogin = (vpa, name, balance) => {
+  const handleLogin = async (vpa, pin, preVerifiedData = null) => {
+    // preVerifiedData: already-verified WebAuthn response ({ name, balance, token })
+    // — skip the PIN-based api.login call entirely.
+    let name, balance;
+    if (preVerifiedData) {
+      name = preVerifiedData.name;
+      balance = preVerifiedData.balance;
+    } else {
+      const { ok, data } = await api.login(vpa, pin);   // verifies account + binds device
+      if (!ok) return { ok: false, error: data.detail || 'Incorrect PIN or account not found' };
+      name = data.name;
+      balance = data.balance;
+    }
     setCurrentUser(vpa);
     setCurrentUserName(name || vpa);
     if (balance != null) setBalance(balance);
     saveSession(vpa);                                   // remember on this device (like GPay)
     api.history(vpa).then((r) => { if (r.ok) setRealTxns(r.data); }).catch(() => {});
-  };
-
-  // LOGIN: UPI ID + PIN. Known device -> in. New device -> OTP step-up (takeover guard).
-  const handleLogin = async (vpa, pin) => {
-    const { ok, data } = await api.login(vpa, pin);
-    if (!ok) return { ok: false, error: data.detail || 'Login failed' };
-    if (data.requires_device_otp)                       // new device -> needs OTP first
-      return { ok: false, needOtp: true, message: data.message, otpDemo: data.otp_demo };
-    applyLogin(vpa, data.name, data.balance);
-    return { ok: true };
-  };
-
-  // new-device OTP verification -> binds device + completes login
-  const handleVerifyDevice = async (vpa, otp) => {
-    const { ok, data } = await api.verifyDevice(vpa, otp);
-    if (!ok) return { ok: false, error: data.detail || 'Invalid OTP' };
-    applyLogin(vpa, data.name, data.balance);
     return { ok: true };
   };
 
@@ -92,55 +86,18 @@ function App() {
     setCurrentUser(null); setCurrentUserName(''); setRealTxns([]);
   };
 
-  // On app open: device already bound + session saved -> restore WITHOUT re-asking PIN
-  // (like GPay staying unlocked). PIN-less GETs only. Login screen shows 1st time / after logout.
-  const restoreSession = async (vpa) => {
-    const r = await api.resolve(vpa);
-    if (!r.ok) return { ok: false };
-    const b = await api.balance(vpa);
-    applyLogin(vpa, r.data.name, b.ok ? b.data.balance : null);
-    return { ok: true };
-  };
-
+  // On app open: if this device already has a bound account, restore it and go
+  // straight to Home — no VPA re-entry (real UX). Login screen only shows 1st time.
   useEffect(() => {
     const saved = getSession();
     if (!saved) { setBooting(false); return; }
-    restoreSession(saved)
+    handleLogin(saved)
       .then((r) => { if (!r || !r.ok) clearSession(); })   // account gone -> clean login
       .finally(() => setBooting(false));
   }, []);
 
   const refreshTxns = () => {
     if (currentUser) api.history(currentUser).then((r) => { if (r.ok) setRealTxns(r.data); });
-  };
-
-  // PRE-PAYMENT beneficiary check: the moment a payee is chosen, score WHO they are
-  // (blacklist/new account/never-paid/mule) and warn early — before amount/PIN.
-  const runPrecheck = (vpa) => {
-    setPayeeRisk(null);
-    if (!currentUser || !vpa) return;
-    api.precheck(currentUser, vpa).then((r) => {
-      if (r.ok) {
-        setPayeeRisk(r.data);
-        if (r.data.warn) triggerNotification(`⚠️ ${r.data.reasons?.[0] || 'Risky payee'}`, "alert");
-      }
-    }).catch(() => {});
-  };
-
-  // REAL "Pay to UPI ID": type ANY vpa -> backend resolves name/age -> go pay it.
-  // This is how you reach someone NOT in your contacts (incl. a mule).
-  const handlePayToVpa = async (raw) => {
-    const vpa = (raw || '').trim().toLowerCase();
-    if (!vpa.includes('@')) return { ok: false, error: 'UPI ID daalo (naam@bank)' };
-    const r = await api.resolve(vpa);
-    if (!r.ok) return { ok: false, error: 'UPI ID nahi mila — check karo' };
-    const name = r.data.name || vpa;
-    setRecipient(name);
-    setSelectedPayee({ name, vpa });        // exact target -> pays THIS vpa
-    setPayAmount('');
-    runPrecheck(vpa);                        // early beneficiary risk warning
-    pushScreen('transfer');
-    return { ok: true, name };
   };
   const [lastTx, setLastTx] = useState({
     id: 'TX-98127',
@@ -175,6 +132,8 @@ function App() {
   // Demo Simulation Parameters
   const [deviceStatus, setDeviceStatus] = useState('registered'); // 'registered' or 'new'
   const [locationStatus, setLocationStatus] = useState('normal'); // 'normal' or 'unusual'
+  const [isDeviceRooted, setIsDeviceRooted] = useState(false);
+  const [isActiveScreenShare, setIsActiveScreenShare] = useState(false);
 
   // Security Event Log
   const [securityLog, setSecurityLog] = useState([
@@ -192,6 +151,11 @@ function App() {
   const [pinValue, setPinValue] = useState("");
   const [pinPurpose, setPinPurpose] = useState(""); // 'unfreeze' | 'unlock' | 'pay'
   const [tempPayDetails, setTempPayDetails] = useState(null);
+  const [otpModalOpen, setOtpModalOpen] = useState(false);
+  const [otpModalTx, setOtpModalTx] = useState(null);
+  const [otpModalCode, setOtpModalCode] = useState('');
+  const [otpModalError, setOtpModalError] = useState('');
+  const [otpResendStatus, setOtpResendStatus] = useState(''); // '' | 'sending' | 'sent'
 
   // AI Scanning Loader
   const [aiScanningTx, setAiScanningTx] = useState(null);
@@ -350,6 +314,8 @@ function App() {
       const { ok, status, data } = await api.pay({
         sender_vpa: currentUser, receiver_vpa: receiver,
         amount, pin, channel: "MANUAL",
+        rooted: isDeviceRooted ? 1 : 0,
+        screen_share: isActiveScreenShare ? 1 : 0,
       });
       setAiScanningTx(null);
       if (!ok) {
@@ -368,16 +334,15 @@ function App() {
         setLastTx({ ...baseTx, status: 'blocked' });
         pushScreen('paid-success');
       } else if (data.label === "REVIEW") {
-        // suspicious -> in-frame OTP step-up (modal handles the rest)
-        setOtpInput("");
-        setOtpModal({ txId: data.transaction_id, reason: data.reasons?.[0] || '',
-                      otpDemo: data.otp_demo, baseTx });
-        return;
+        setOtpModalTx({ ...baseTx, transaction_id: data.transaction_id, otpDemo: data.otp_demo });
+        setOtpModalCode('');
+        setOtpModalError('');
+        setOtpResendStatus('');
+        setOtpModalOpen(true);
       } else {                                  // SAFE
         setBalance(data.sender_balance);
-        if (data.post_review) {                 // completed, but flagged in hindsight
-          setLastTx({ ...baseTx, status: 'flagged', postMessage: data.post_message,
-                      txId: data.transaction_id });
+        if (data.post_review) {                 // F3: completed but flagged in hindsight
+          setLastTx({ ...baseTx, status: 'flagged', postMessage: data.post_message, txId: data.transaction_id });
           triggerNotification("⚠️ Payment flagged after completion — recall available", "alert");
         } else {
           setLastTx({ ...baseTx, status: 'success' });
@@ -388,34 +353,36 @@ function App() {
       refreshTxns();                            // reload real history after any result
     } catch (e) {
       setAiScanningTx(null);
-      triggerNotification("⚠️ Backend not reachable — start server on :8000", "alert");
+      triggerNotification("⚠️ Backend not reachable — start server on :3000", "alert");
     }
   };
 
-  // REVIEW OTP step-up: verify the entered OTP -> complete or reject the held payment
-  const submitOtp = async (code) => {
-    if (!otpModal) return;
-    const v = await api.verifyOtp(otpModal.txId, code);
-    if (v.ok) {
-      setBalance(v.data.sender_balance);
-      setOtpModal(null); setOtpInput("");
-      if (v.data.post_review) {
-        setLastTx({ ...otpModal.baseTx, status: 'flagged', postMessage: v.data.post_message, txId: otpModal.txId });
-        triggerNotification("⚠️ Payment flagged after completion — recall available", "alert");
+  const handleOtpSubmit = async (enteredOtp) => {
+    if (!otpModalTx) return;
+    setOtpModalError('');
+    try {
+      const v = await api.verifyOtp(otpModalTx.transaction_id, enteredOtp);
+      if (v.ok) {
+        setBalance(v.data.sender_balance);
+        setOtpModalOpen(false);
+        setOtpModalTx(null);
+        if (v.data.post_review) {               // F3: flagged after OTP-completed
+          setLastTx({ ...otpModalTx, status: 'flagged', postMessage: v.data.post_message,
+                      txId: otpModalTx.transaction_id });
+          triggerNotification("⚠️ Payment flagged after completion — recall available", "alert");
+        } else {
+          setLastTx({ ...otpModalTx, status: 'success' });
+          triggerNotification("Verified — payment completed", "info");
+        }
+        pushScreen('paid-success');
+        refreshTxns();
       } else {
-        setLastTx({ ...otpModal.baseTx, status: 'success' });
-        triggerNotification("Verified — payment completed", "info");
+        setOtpModalError("Invalid OTP code. Please try again.");
+        triggerNotification("Invalid OTP — payment blocked", "alert");
       }
-      pushScreen('paid-success');
-      refreshTxns();
-    } else {
-      setOtpInput("");
-      triggerNotification(v.data.detail || "Invalid OTP", "alert");   // backend locks after 3 tries
+    } catch (e) {
+      setOtpModalError("Verification failed. Server unreachable.");
     }
-  };
-  const cancelOtp = () => {
-    setOtpModal(null); setOtpInput("");
-    triggerNotification("Payment cancelled", "info");
   };
 
   // Post Risk-Authentication flow
@@ -516,23 +483,30 @@ function App() {
 
   // --- RECALL / CANCEL TRANSACTION ---
   const handleRecallTransaction = async (txId) => {
-    const realTxId = lastTx && lastTx.txId;   // real backend txn -> actually reverse
+    const realTxId = lastTx && lastTx.txId;   // F3: real backend txn -> actually reverse money
     if (realTxId) {
       const r = await api.recall(realTxId);
       if (r.ok) {
         setBalance(r.data.sender_balance);
         setLastTx(prev => ({ ...prev, status: 'recalled', timeLeft: 0 }));
         triggerNotification(`✅ ${r.data.message}`, "info");
-        refreshTxns();
+        refreshTxns && refreshTxns();
       } else {
         triggerNotification(r.data.detail || "Recall failed", "alert");
       }
       return;
     }
-    // legacy local cooling-off flow
     setPendingTransactions(prev => prev.filter(tx => tx.id !== txId));
     triggerNotification("Transaction Cancelled: Funds recalled safely", "info");
     setLastTx(prev => ({ ...prev, status: 'recalled', timeLeft: 0 }));
+  };
+
+  // F2: pre-payment beneficiary check — warn EARLY when a risky payee is selected
+  const runPrecheck = (vpa) => {
+    if (!currentUser || !vpa) return;
+    api.precheck(currentUser, vpa).then((r) => {
+      if (r.ok && r.data.warn) triggerNotification(`⚠️ ${r.data.reasons?.[0] || 'Risky payee'}`, "alert");
+    }).catch(() => {});
   };
 
   // --- ONE-TAP FRAUD REPORT DRAWERS ---
@@ -544,22 +518,10 @@ function App() {
   const handleFraudReportSuccess = (reportDetails) => {
     popScreen(); // close report form
     triggerNotification(`Fraud Report ${reportDetails.id} submitted successfully`, "info");
-
-    // REAL blacklist: find the reported VPA and tell the backend so future
-    // payments to it are auto-blocked (not just a local log).
-    const cand = (reportingTx && (reportingTx.receiver || reportingTx.recipient))
-      || reportDetails.recipient || '';
-    const reportedVpa = cand.includes('@') ? cand
-      : (selectedPayee && selectedPayee.vpa) || NAME_TO_VPA[cand] || '';
-    if (reportedVpa && currentUser) {
-      api.report(reportedVpa, currentUser, reportDetails.reason || 'user reported fraud')
-        .then((r) => {
-          if (r.ok) triggerNotification(`${reportedVpa} blacklisted — future payments blocked`, "alert");
-        }).catch(() => {});
-    }
-
+    
+    // Block recipient list
     setSecurityLog(prev => [
-      { message: `Flagged Scammer: ${reportedVpa || reportDetails.recipient} added to blocked registry`, type: "alert", time: new Date().toLocaleTimeString() },
+      { message: `Flagged Scammer: ${reportDetails.recipient} added to blocked registry`, type: "alert", time: new Date().toLocaleTimeString() },
       ...prev
     ]);
   };
@@ -598,8 +560,8 @@ function App() {
             onSendToContact={(displayName, vpa) => {   // real person from txn history
               setRecipient(displayName);
               setSelectedPayee({ name: displayName, vpa });   // exact target, wins over name-map
+              runPrecheck(vpa);                               // F2: early beneficiary warning
               setPayAmount("");
-              runPrecheck(vpa);                               // early beneficiary risk warning
               pushScreen('transfer');
             }}
             onCheckBalance={() => pushScreen('check-balance')}
@@ -623,7 +585,8 @@ function App() {
             }}
             onPromoClick={(id) => {
               if (id === 'spends') pushScreen('analytics');
-              else if (id === 'autopay') pushScreen('upi-settings');
+              else if (id === 'autopay') pushScreen('autopay');
+              else if (id === 'referral') pushScreen('refer');
               else {
                 setRecipient("payit rewards bonus");
                 pushScreen('transfer');
@@ -643,10 +606,14 @@ function App() {
       case 'qr-scanner':
         return (
           <QrScanner
-            onClose={popScreen}
-            onEnterVpa={handlePayToVpa}
-            onScanSuccess={(name) => {
+            onClose={() => resetToScreen('transfer')}
+            onScanSuccess={(name, vpa) => {
               setRecipient(name);
+              if (vpa && vpa.includes('@')) {
+                setSelectedPayee({ name, vpa });
+                runPrecheck(vpa);                             // F2: early beneficiary warning
+              }
+              popScreen();
               pushScreen('transfer');
             }}
           />
@@ -680,6 +647,10 @@ function App() {
             setDeviceStatus={setDeviceStatus}
             locationStatus={locationStatus}
             setLocationStatus={setLocationStatus}
+            isDeviceRooted={isDeviceRooted}
+            setIsDeviceRooted={setIsDeviceRooted}
+            isActiveScreenShare={isActiveScreenShare}
+            setIsActiveScreenShare={setIsActiveScreenShare}
           />
         );
       case 'activity':
@@ -735,19 +706,43 @@ function App() {
             }}
           />
         );
-      case 'transfer':
+      case 'transfer': {
+        const resolvedVpa = (selectedPayee && selectedPayee.name === recipient)
+          ? selectedPayee.vpa : (NAME_TO_VPA[recipient] || '');
+        const hasRecipient = !!recipient && recipient !== 'Add money' && recipient !== 'Fixed Deposit' && recipient !== 'SBI Bank Link' && !!resolvedVpa;
+
         return (
           <TransferKeypad
-            recipientName={recipient}
-            recipientVpa={(selectedPayee && selectedPayee.name === recipient)
-              ? selectedPayee.vpa : (NAME_TO_VPA[recipient] || '')}
-            payeeRisk={payeeRisk}
+            recipientName={hasRecipient ? recipient : ''}
+            recipientVpa={hasRecipient ? resolvedVpa : ''}
             userInitial={(currentUserName || 'U').trim().charAt(0).toUpperCase()}
             prefilledAmount={payAmount}
-            onTransferSuccess={(amt) => handlePaymentProcess(amt, false)}
+            onTransferSuccess={(amt) => {
+              if (hasRecipient) {
+                handlePaymentProcess(amt, false);
+              } else {
+                setPayAmount(amt.toString());
+                pushScreen('payee-selector');
+              }
+            }}
             onInvestSuccess={(amt) => handlePaymentProcess(amt, true)}
             onOpenScanner={() => pushScreen('qr-scanner')}
             onCheckBalance={() => pushScreen('check-balance')}
+          />
+        );
+      }
+      case 'payee-selector':
+        return (
+          <PayeeSelector
+            amount={payAmount}
+            balance={balance}
+            onBack={popScreen}
+            onPayeeSelected={(name, vpa) => {
+              setRecipient(name);
+              setSelectedPayee({ name, vpa });
+              runPrecheck(vpa);                               // F2: early beneficiary warning
+              handlePaymentProcess(parseFloat(payAmount), false);
+            }}
           />
         );
       case 'fraud-report':
@@ -757,6 +752,14 @@ function App() {
             onBack={popScreen}
             onSubmitSuccess={handleFraudReportSuccess}
           />
+        );
+      case 'refer':
+        return (
+          <ReferPage onBack={popScreen} />
+        );
+      case 'autopay':
+        return (
+          <AutopayPage onBack={popScreen} />
         );
       default:
         return (
@@ -782,13 +785,16 @@ function App() {
       'check-balance': 'UPI Security',
       'upi-settings': 'UPI Settings',
       transfer: 'Transfer',
-      'fraud-report': ''
+      'payee-selector': 'Select Payee',
+      'fraud-report': '',
+      'refer': 'Invite & Earn',
+      'autopay': ''
     };
     return titles[activeScreen] || '';
   };
 
   const showBackButton = () => {
-    return ['recharge-bills', 'analytics', 'check-balance', 'upi-settings', 'transfer', 'qr-scanner', 'paid-success', 'fraud-report'].includes(activeScreen);
+    return ['recharge-bills', 'analytics', 'check-balance', 'upi-settings', 'transfer', 'qr-scanner', 'paid-success', 'fraud-report', 'payee-selector', 'refer', 'autopay'].includes(activeScreen);
   };
 
   // While restoring a saved session on open, don't flash the login screen.
@@ -811,8 +817,8 @@ function App() {
   if (!currentUser) {
     return (
       <div className="mobile-app-wrapper">
-        <PhoneFrame currentScreen="login" title="" showBackButton={false} hideNav>
-          <Login onLogin={handleLogin} onVerifyDevice={handleVerifyDevice} deviceId={getDeviceId()} />
+        <PhoneFrame currentScreen="login" title="" showBackButton={false}>
+          <OnboardingFlow onLogin={handleLogin} deviceId={getDeviceId()} />
         </PhoneFrame>
       </div>
     );
@@ -906,55 +912,6 @@ function App() {
               <button onClick={() => { setPinModal(null); setPinInput(""); }}
                 style={{ marginTop: 16, background: 'none', border: 'none', color: '#888', cursor: 'pointer' }}>
                 Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* --- REVIEW OTP STEP-UP MODAL (in-frame; does NOT show the code) --- */}
-        {otpModal && (
-          <div style={styles.modalOverlay} className="animate-fade-in">
-            <div style={{ background: '#141414', borderRadius: 20, padding: 24, width: 300,
-                          textAlign: 'center', border: '1px solid #ff8c0055' }} className="animate-scale-in">
-              <ShieldAlert size={28} color="#ff8c00" style={{ marginBottom: 8 }} />
-              <h3 style={{ color: '#fff', margin: '4px 0' }}>Extra verification</h3>
-              <p style={{ color: '#ff8c00', fontSize: 12, marginBottom: 4, lineHeight: 1.4 }}>
-                {otpModal.reason || 'This payment looks risky'}
-              </p>
-              <p style={{ color: '#888', fontSize: 12, marginBottom: 14 }}>
-                OTP bheja gaya registered number pe. Daalo:
-              </p>
-              <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginBottom: 18 }}>
-                {[0,1,2,3,4,5].map(i => (
-                  <div key={i} style={{ width: 10, height: 10, borderRadius: '50%',
-                    background: i < otpInput.length ? '#ff8c00' : '#333' }} />
-                ))}
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-                {['1','2','3','4','5','6','7','8','9','','0','⌫'].map((k, idx) => (
-                  <button key={idx} disabled={k === ''}
-                    onClick={() => {
-                      if (k === '⌫') { setOtpInput(p => p.slice(0, -1)); return; }
-                      if (k === '') return;
-                      const next = (otpInput + k).slice(0, 6);
-                      setOtpInput(next);
-                      if (next.length === 6) setTimeout(() => submitOtp(next), 150);
-                    }}
-                    style={{ padding: '14px 0', fontSize: 20, borderRadius: 12,
-                      background: k === '' ? 'transparent' : '#222', color: '#fff',
-                      border: 'none', cursor: k === '' ? 'default' : 'pointer' }}>
-                    {k}
-                  </button>
-                ))}
-              </div>
-              {otpModal.otpDemo && (
-                <p style={{ color: '#22e67b', fontSize: 11, marginTop: 12 }}>
-                  Demo OTP: <b>{otpModal.otpDemo}</b> (real app SMS bhejta)
-                </p>
-              )}
-              <button onClick={cancelOtp}
-                style={{ marginTop: 10, background: 'none', border: 'none', color: '#888', cursor: 'pointer' }}>
-                Cancel payment
               </button>
             </div>
           </div>
@@ -1067,6 +1024,135 @@ function App() {
               >
                 Simulate Expiry (Cancel & Request PIN)
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* --- CUSTOM REACT OTP VERIFICATION MODAL --- */}
+        {otpModalOpen && otpModalTx && (
+          <div style={styles.modalOverlay} className="animate-fade-in">
+            <div style={{
+              background: '#141414',
+              borderRadius: 24,
+              padding: 24,
+              width: 320,
+              textAlign: 'center',
+              border: '1px solid rgba(255,255,255,0.06)',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.8)'
+            }} className="animate-scale-in">
+              <ShieldAlert size={36} color="#ff8c00" style={{ marginBottom: 12 }} />
+              <h3 style={{ color: '#fff', margin: '4px 0', fontSize: '18px', fontWeight: '700' }}>Extra Verification Needed</h3>
+              <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, marginBottom: 16 }}>
+                We detected anomalous behavior. To complete your payment of <strong>₹{otpModalTx.amount}</strong> to <strong>{otpModalTx.recipient}</strong>, enter the 6-digit OTP sent to your registered mobile.
+              </p>
+
+              {/* OTP hint — shows the demo code locally; real app = SMS only */}
+              <div style={{ backgroundColor: 'rgba(255,140,0,0.06)', border: '1px solid rgba(255,140,0,0.2)', borderRadius: 12, padding: '10px 14px', marginBottom: 16, textAlign: 'left' }}>
+                <p style={{ color: '#ff8c00', fontSize: 11, fontWeight: 600, margin: 0 }}>📱 OTP sent to your registered mobile number</p>
+                {otpModalTx.otpDemo ? (
+                  <p style={{ color: '#22e67b', fontSize: 12, margin: '4px 0 0 0' }}>Demo OTP: <b>{otpModalTx.otpDemo}</b> (real app: SMS only)</p>
+                ) : (
+                  <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10, margin: '4px 0 0 0' }}>Check server logs if testing locally.</p>
+                )}
+              </div>
+
+              <input
+                type="text"
+                maxLength={6}
+                value={otpModalCode}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                  setOtpModalCode(val);
+                }}
+                placeholder="------"
+                style={{
+                  width: '100%',
+                  backgroundColor: '#0c0c0e',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: 12,
+                  padding: '12px',
+                  fontSize: '20px',
+                  textAlign: 'center',
+                  color: '#fff',
+                  letterSpacing: '6px',
+                  fontWeight: '700',
+                  marginBottom: 12,
+                  outline: 'none'
+                }}
+                aria-label="OTP verification code"
+              />
+
+              {otpModalError && (
+                <p style={{ color: 'var(--accent-pink)', fontSize: '11px', margin: '0 0 12px 0', fontWeight: '600' }}>
+                  {otpModalError}
+                </p>
+              )}
+
+              {/* Resend OTP */}
+              <div style={{ textAlign: 'center', marginBottom: 12 }}>
+                <button
+                  disabled={otpResendStatus === 'sending' || otpResendStatus === 'sent'}
+                  onClick={async () => {
+                    setOtpResendStatus('sending');
+                    try {
+                      const rr = await api.resendOtp(otpModalTx.transaction_id);
+                      if (rr.ok && rr.data.otp_demo)   // update shown demo code
+                        setOtpModalTx(prev => ({ ...prev, otpDemo: rr.data.otp_demo }));
+                      setOtpResendStatus('sent');
+                      setTimeout(() => setOtpResendStatus(''), 30000);
+                    } catch {
+                      setOtpResendStatus('');
+                    }
+                  }}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: otpResendStatus === 'sent' ? 'var(--accent-neon)' : 'rgba(255,255,255,0.4)',
+                    fontSize: 11, fontWeight: 600
+                  }}
+                >
+                  {otpResendStatus === 'sending' ? 'Sending…' : otpResendStatus === 'sent' ? '✓ OTP resent' : 'Resend OTP'}
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  onClick={() => {
+                    setOtpModalOpen(false);
+                    setOtpModalTx(null);
+                    triggerNotification("Payment cancelled", "info");
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '12px 0',
+                    borderRadius: 12,
+                    background: 'rgba(255,255,255,0.04)',
+                    color: 'rgba(255,255,255,0.6)',
+                    border: 'none',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={otpModalCode.length < 6}
+                  onClick={() => handleOtpSubmit(otpModalCode)}
+                  style={{
+                    flex: 2,
+                    padding: '12px 0',
+                    borderRadius: 12,
+                    background: otpModalCode.length < 6 ? '#222' : 'linear-gradient(135deg, #ff8c00, #e65c00)',
+                    color: otpModalCode.length < 6 ? '#555' : '#fff',
+                    border: 'none',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: otpModalCode.length < 6 ? 'default' : 'pointer'
+                  }}
+                >
+                  Verify & Pay
+                </button>
+              </div>
             </div>
           </div>
         )}

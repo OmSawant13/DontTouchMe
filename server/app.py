@@ -99,11 +99,30 @@ def send_sms_otp(phone_number: str, otp_code: str, context: str = "verification"
     twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     twilio_token = os.environ.get("TWILIO_AUTH_TOKEN")
     twilio_from = os.environ.get("TWILIO_PHONE_NUMBER")
+    twilio_verify_sid = os.environ.get("TWILIO_VERIFY_SERVICE_SID")
     fast2sms_key = os.environ.get("FAST2SMS_API_KEY")
 
     message_body = f"Your PayIt OTP for {context} is {otp_code}. Valid for 5 minutes. Do not share this code."
 
-    # 1. Twilio SMS Integration
+    # 1. Twilio Verify API Integration
+    if twilio_sid and twilio_token and twilio_verify_sid:
+        try:
+            url = f"https://verify.twilio.com/v2/Services/{twilio_verify_sid}/Verifications"
+            post_data = urllib.parse.urlencode({
+                "To": full_phone,
+                "Channel": "sms"
+            }).encode('utf-8')
+            req = urllib.request.Request(url, data=post_data, method="POST")
+            auth_header = base64.b64encode(f"{twilio_sid}:{twilio_token}".encode()).decode()
+            req.add_header("Authorization", f"Basic {auth_header}")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status in (200, 201):
+                    print(f"[SMS SENT - TWILIO VERIFY] Sent verification to {full_phone}")
+                    return {"delivered": True, "provider": "twilio_verify", "otp_demo": otp_code}
+        except Exception as err:
+            print(f"[SMS TWILIO VERIFY ERROR] Could not send via Twilio Verify to {full_phone}: {err}")
+
+    # 2. Twilio Programmable SMS Integration
     if twilio_sid and twilio_token and twilio_from:
         try:
             url = f"https://api.twilio.com/2010-04-01/Accounts/{twilio_sid}/Messages.json"

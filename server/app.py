@@ -2344,8 +2344,36 @@ def auth_verify_otp(req: VerifyOnboardingOtpReq):
     """Verify the onboarding OTP for a given phone number."""
     phone_clean = "".join(ch for ch in req.phone if ch.isdigit())[-10:]
     code_clean = req.code.strip()
+    full_phone = "+91" + phone_clean if len(phone_clean) == 10 else "+" + phone_clean
+
+    twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    twilio_token = os.environ.get("TWILIO_AUTH_TOKEN")
+    twilio_verify_sid = os.environ.get("TWILIO_VERIFY_SERVICE_SID")
+
+    # 1. Check with Twilio Verify API if configured
+    if twilio_sid and twilio_token and twilio_verify_sid:
+        try:
+            url = f"https://verify.twilio.com/v2/Services/{twilio_verify_sid}/VerificationCheck"
+            post_data = urllib.parse.urlencode({
+                "To": full_phone,
+                "Code": code_clean
+            }).encode('utf-8')
+            req_verify = urllib.request.Request(url, data=post_data, method="POST")
+            auth_header = base64.b64encode(f"{twilio_sid}:{twilio_token}".encode()).decode()
+            req_verify.add_header("Authorization", f"Basic {auth_header}")
+            with urllib.request.urlopen(req_verify, timeout=8) as resp:
+                check_res = json.loads(resp.read().decode('utf-8'))
+                print(f"[TWILIO VERIFY CHECK RESULT]: {check_res}")
+                if check_res.get("status") == "approved" or check_res.get("valid") is True:
+                    con = db()
+                    con.execute("UPDATE otp_verifications SET status='verified' WHERE user_id=0 AND code LIKE ?", (f"phone:{phone_clean}:%",))
+                    con.commit(); con.close()
+                    return {"result": "verified", "message": "Phone verified successfully via Twilio Verify."}
+        except Exception as err:
+            print(f"[TWILIO VERIFY CHECK ERROR]: {err}")
+
+    # 2. Check local database otp_verifications table
     con = db()
-    # Find most recent valid OTP for this phone
     match = con.execute(
         """SELECT * FROM otp_verifications
            WHERE user_id=0 AND status='pending'
@@ -2356,13 +2384,11 @@ def auth_verify_otp(req: VerifyOnboardingOtpReq):
     if not match:
         con.close()
         raise HTTPException(400, "OTP expired or not found. Please request a new one.")
-    # Extract the actual code from the stored value "phone:NNNNNNNNNN:XXXXXX"
     stored_code = match["code"].split(":")[-1]
     if stored_code != code_clean:
         con.execute("UPDATE otp_verifications SET attempts = attempts + 1 WHERE id=?", (match["id"],))
         con.commit(); con.close()
         raise HTTPException(400, "Incorrect OTP. Please try again.")
-    # Mark as verified
     con.execute("UPDATE otp_verifications SET status='verified' WHERE id=?", (match["id"],))
     con.commit(); con.close()
     return {"result": "verified", "message": "Phone verified successfully."}

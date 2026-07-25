@@ -125,24 +125,46 @@ def send_sms_otp(phone_number: str, otp_code: str, context: str = "verification"
             print(f"[SMS TWILIO ERROR] Could not send SMS to {full_phone}: {err}")
 
     # 2. Fast2SMS Integration (popular Indian SMS API)
-    if fast2sms_key:
+    clean_fast2sms_key = fast2sms_key.strip().strip('"').strip("'") if fast2sms_key else ""
+    if clean_fast2sms_key and clean_fast2sms_key != "your_fast2sms_api_key_here":
+        # Method A: Try GET request URL format
         try:
-            url = "https://www.fast2sms.com/dev/bulkV2"
+            params = urllib.parse.urlencode({
+                "authorization": clean_fast2sms_key,
+                "route": "otp",
+                "variables_values": otp_code,
+                "numbers": clean_phone[-10:]
+            })
+            url_get = f"https://www.fast2sms.com/dev/bulkV2?{params}"
+            req_get = urllib.request.Request(url_get, method="GET")
+            with urllib.request.urlopen(req_get, timeout=8) as resp:
+                res_data = json.loads(resp.read().decode('utf-8'))
+                print(f"[FAST2SMS RESPONSE]: {res_data}")
+                if res_data.get("return") is True:
+                    print(f"[SMS SENT - FAST2SMS] Delivered OTP to {clean_phone[-10:]}")
+                    return {"delivered": True, "provider": "fast2sms", "otp_demo": otp_code}
+        except Exception as err_get:
+            print(f"[SMS FAST2SMS GET ERROR] {err_get}")
+
+        # Method B: Fallback POST JSON format
+        try:
+            url_post = "https://www.fast2sms.com/dev/bulkV2"
             payload = json.dumps({
                 "route": "otp",
                 "variables_values": otp_code,
                 "numbers": clean_phone[-10:]
             }).encode('utf-8')
-            req = urllib.request.Request(url, data=payload, method="POST")
-            req.add_header("authorization", fast2sms_key)
-            req.add_header("Content-Type", "application/json")
-
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                if resp.status == 200:
+            req_post = urllib.request.Request(url_post, data=payload, method="POST")
+            req_post.add_header("authorization", clean_fast2sms_key)
+            req_post.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req_post, timeout=8) as resp:
+                res_data = json.loads(resp.read().decode('utf-8'))
+                print(f"[FAST2SMS POST RESPONSE]: {res_data}")
+                if res_data.get("return") is True:
                     print(f"[SMS SENT - FAST2SMS] Delivered OTP to {clean_phone[-10:]}")
                     return {"delivered": True, "provider": "fast2sms", "otp_demo": otp_code}
-        except Exception as err:
-            print(f"[SMS FAST2SMS ERROR] Could not send SMS to {clean_phone[-10:]}: {err}")
+        except Exception as err_post:
+            print(f"[SMS FAST2SMS POST ERROR] {err_post}")
 
     # 3. Fallback: Demo / Dev Mode (Log code to server terminal)
     print(f"[OTP CHALLENGE ({context})] phone={full_phone} → OTP: {otp_code} (No SMS API credentials in .env - Demo mode)")

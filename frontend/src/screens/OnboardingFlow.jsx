@@ -106,21 +106,12 @@ export default function OnboardingFlow({ onLogin, deviceId }) {
         setVpa(cleanPhone + '@payit');
       }
 
-      // 1. Try Firebase Phone Auth
-      const fbRes = await sendFirebaseOtp(cleanPhone, 'recaptcha-container');
-      if (fbRes.success && fbRes.confirmationResult) {
-        setFbConfirmation(fbRes.confirmationResult);
+      // Server OTP Generation (Direct, reliable, no Firebase reCAPTCHA)
+      const otpRes = await api.sendOtp(cleanPhone);
+      if (otpRes.ok && otpRes.data && otpRes.data.otp_demo) {
+        setOnboardingOtpDemo(otpRes.data.otp_demo);
       } else {
-        if (fbRes.error) {
-          console.warn("[Firebase Phone Auth Error]:", fbRes.error);
-        }
-        // Fallback to server OTP
-        const otpRes = await api.sendOtp(cleanPhone);
-        if (otpRes.ok && otpRes.data && otpRes.data.otp_demo) {
-          setOnboardingOtpDemo(otpRes.data.otp_demo);
-        } else {
-          setOnboardingOtpDemo('123456');
-        }
+        setOnboardingOtpDemo('123456');
       }
       setBusy(false);
       setOtp(['', '', '', '', '', '']);
@@ -128,7 +119,7 @@ export default function OnboardingFlow({ onLogin, deviceId }) {
       setStep('otp_verify');
       setOtpTimer(60);
     } catch {
-      // Offline fallback: allow smooth demo onboarding so user is never blocked by connection error
+      // Offline fallback: allow smooth demo onboarding
       setUserProfile({ registered: false });
       setFullName('');
       setVpa(cleanPhone + '@payit');
@@ -151,34 +142,10 @@ export default function OnboardingFlow({ onLogin, deviceId }) {
     try {
       const cleanPhone = phone.replace(/\D/g, '');
 
-      // Try Firebase verification if confirmationResult exists
-      if (fbConfirmation) {
-        const fbVerify = await verifyFirebaseOtp(fbConfirmation, code);
-        if (fbVerify.success && fbVerify.idToken) {
-          const fbLoginRes = await api.firebaseLogin(fbVerify.idToken);
-          setBusy(false);
-          if (fbLoginRes.ok) {
-            if (fbLoginRes.data?.registered && fbLoginRes.data?.token) {
-              setUserProfile(fbLoginRes.data);
-            }
-            setStep('permissions');
-            return;
-          }
-        } else if (code !== onboardingOtpDemo) {
-          setBusy(false);
-          setErr(fbVerify.error?.includes('invalid-verification-code') 
-            ? 'Incorrect OTP code. Enter the 6-digit code received via SMS or test code.' 
-            : (fbVerify.error || 'Firebase OTP verification failed.'));
-          return;
-        }
-      }
-
-      // Backend / Demo OTP verification (handles Auto-fill and server demo OTPs)
+      // Direct Server / Demo OTP verification
       const res = await api.verifyOnboardingOtp(cleanPhone, code);
       setBusy(false);
-      if (res.ok) {
-        setStep('permissions');
-      } else if (code === onboardingOtpDemo || code === '123456') {
+      if (res.ok || code === onboardingOtpDemo || code === '123456') {
         setStep('permissions');
       } else {
         setErr(res.data?.detail || 'Incorrect OTP. Please try again.');
@@ -556,27 +523,27 @@ export default function OnboardingFlow({ onLogin, deviceId }) {
             ))}
           </div>
 
-          {/* Server-log notice */}
           <div style={{ backgroundColor: 'rgba(170,51,255,0.07)', border: '1px solid rgba(170,51,255,0.2)', borderRadius: 10, padding: '8px 12px', marginBottom: 10, textAlign: 'center' }}>
             <p style={{ color: '#aa33ff', fontSize: 11, fontWeight: 600, margin: 0 }}>📱 OTP sent to +91 {phone.slice(-4).padStart(phone.length, '•')}</p>
-            {onboardingOtpDemo ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 4 }}>
-                <span style={{ color: '#22e67b', fontSize: 11, fontWeight: 700 }}>Demo OTP: {onboardingOtpDemo}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const digits = onboardingOtpDemo.split('').slice(0, 6);
-                    setOtp(digits);
-                    handleOtpSubmit(onboardingOtpDemo);
-                  }}
-                  style={{ background: 'var(--accent-neon, #22e67b)', color: '#000', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}
-                >
-                  ⚡ Auto-fill
-                </button>
-              </div>
-            ) : (
-              <p style={{ color: 'var(--text-muted)', fontSize: 10, margin: '3px 0 0 0' }}>Check Render / server logs to retrieve code.</p>
-            )}
+            {(() => {
+              const activeCode = onboardingOtpDemo || '123456';
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 4 }}>
+                  <span style={{ color: '#22e67b', fontSize: 11, fontWeight: 700 }}>Demo OTP: {activeCode}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const digits = activeCode.split('').slice(0, 6);
+                      setOtp(digits);
+                      handleOtpSubmit(activeCode);
+                    }}
+                    style={{ background: 'var(--accent-neon, #22e67b)', color: '#000', border: 'none', borderRadius: 6, padding: '3px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer', boxShadow: '0 2px 8px rgba(34,230,123,0.25)' }}
+                  >
+                    ⚡ Auto-fill
+                  </button>
+                </div>
+              );
+            })()}
           </div>
 
           <div style={S.otpResendRow}>
